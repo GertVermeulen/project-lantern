@@ -10,6 +10,7 @@ import os
 
 import pandas as pd
 import psycopg2
+import pydeck as pdk
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -98,10 +99,37 @@ nav_label.markdown(
     unsafe_allow_html=True,
 )
 
-st.map(
-    pd.DataFrame([{"lat": row["latitude"], "lon": row["longitude"]}]),
-    zoom=12,
-    height=220,
+site_point = pd.DataFrame([{"lat": row["latitude"], "lon": row["longitude"], "name": row["name"]}])
+
+icon_layer = pdk.Layer(
+    "TextLayer",
+    data=site_point,
+    get_position=["lon", "lat"],
+    get_text="'📍'",
+    get_size=36,
+    get_color=[220, 30, 30],
+    get_text_anchor="'middle'",
+    get_alignment_baseline="'bottom'",
+)
+label_layer = pdk.Layer(
+    "TextLayer",
+    data=site_point,
+    get_position=["lon", "lat"],
+    get_text="name",
+    get_size=15,
+    get_color=[20, 20, 20],
+    get_text_anchor="'middle'",
+    get_alignment_baseline="'top'",
+    get_pixel_offset=[0, 6],
+)
+
+st.pydeck_chart(
+    pdk.Deck(
+        layers=[icon_layer, label_layer],
+        initial_view_state=pdk.ViewState(latitude=row["latitude"], longitude=row["longitude"], zoom=12),
+        tooltip=False,
+    ),
+    height=440,
 )
 
 live = get_live_conditions(row["latitude"], row["longitude"])
