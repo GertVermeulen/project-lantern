@@ -1,3 +1,4 @@
+# Recent rainfall snapshot, run on a schedule
 name: Update rainfall
 
 on:
