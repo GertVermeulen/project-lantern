@@ -97,13 +97,13 @@ def rain_tier(r):
 
 def _card(icon, label, value, color=None):
     """A compact reading tile. color=None renders a neutral (informational, non-tiered) card."""
-    accent = color or "var(--secondary-background-color)"
-    bg = _hex_to_rgba(color, 0.12) if color else "var(--secondary-background-color)"
+    accent = color or "var(--card-bg)"
+    bg = _hex_to_rgba(color, 0.12) if color else "var(--card-bg)"
     return f"""
     <div style="flex:1; min-width:110px; background:{bg}; border-left:3px solid {accent};
                 border-radius:6px; padding:6px 10px;">
-      <div style="font-size:0.68rem; color:var(--text-color); opacity:0.7; white-space:nowrap;">{icon} {label}</div>
-      <div style="font-size:1.05rem; font-weight:600; color:var(--text-color);">{value}</div>
+      <div style="font-size:0.68rem; color:var(--ink); opacity:0.7; white-space:nowrap;">{icon} {label}</div>
+      <div style="font-size:1.05rem; font-weight:600; color:var(--ink);">{value}</div>
     </div>
     """
 
@@ -158,7 +158,7 @@ def _gauge_legend():
     items = "".join(
         f'<span style="display:inline-flex; align-items:center; gap:4px; margin:0 10px;">'
         f'<span style="width:9px; height:9px; border-radius:50%; background:{GAUGE_ZONE_COLORS[i]}; display:inline-block;"></span>'
-        f'<span style="font-size:0.72rem; color:var(--text-color); opacity:0.75;">{label}</span></span>'
+        f'<span style="font-size:0.72rem; color:var(--ink); opacity:0.75;">{label}</span></span>'
         for i, label in enumerate(["Poor", "Good", "Excellent"])
     )
     return f'<div style="text-align:center; margin-top:2px;">{items}</div>'
@@ -171,11 +171,21 @@ DB_DSN = os.environ.get("DB_DSN") or st.secrets.get(
 st.set_page_config(page_title="Visibility Predictor", page_icon="🤿", layout="wide")
 
 # Compact everything down so a single site's data fits on screen with no scroll.
+# Streamlit doesn't actually expose --text-color/--secondary-background-color
+# as CSS custom properties (verified: absent from its shipped bundle) - --ink
+# and --card-bg below are our own, so custom HTML has something real to read.
 st.markdown(
     """
     <style>
+    :root {
+      --ink: #0b0b0b;
+      --card-bg: #f0efec;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --ink: #ffffff; --card-bg: #2c2c2a; }
+    }
     div.block-container {padding-top: 1.2rem; padding-bottom: 1rem;}
-    #MainMenu, footer {visibility: hidden;}
+    #MainMenu, footer, [data-testid="stHeader"] {display: none;}
     h4 {font-size: 1.05rem !important; margin: 0 0 0.2rem 0 !important;}
     [data-testid="stCaptionContainer"] p {font-size: 0.7rem !important;}
     [data-testid="stMetricValue"] {font-size: 1.15rem !important;}
@@ -347,7 +357,7 @@ st.markdown(
                 border-radius:8px; padding:8px 14px; margin-bottom:10px;
                 display:flex; align-items:center; gap:8px;">
       <span style="font-size:1.3rem;">🤿</span>
-      <span style="font-weight:700; font-size:0.95rem; color:var(--text-color);">{overall_label} diving conditions</span>
+      <span style="font-weight:700; font-size:0.95rem; color:var(--ink);">{overall_label} diving conditions</span>
     </div>
     """,
     unsafe_allow_html=True,
@@ -357,14 +367,14 @@ gauge_col, cards_col = st.columns([2, 3])
 
 gauge_col.markdown(
     f"""
-    <div style="text-align:center; font-size:0.68rem; color:var(--text-color); opacity:0.6; margin-bottom:2px;">
+    <div style="text-align:center; font-size:0.68rem; color:var(--ink); opacity:0.6; margin-bottom:2px;">
       {hero_note}
     </div>
-    {_gauge_svg(hero_zsd, "var(--text-color)")}
-    <div style="text-align:center; font-size:2.8rem; font-weight:700; color:var(--text-color); line-height:1; margin-top:2px;">
+    {_gauge_svg(hero_zsd, "var(--ink)")}
+    <div style="text-align:center; font-size:2.8rem; font-weight:700; color:var(--ink); line-height:1; margin-top:2px;">
       {hero_value}
     </div>
-    <div style="text-align:center; font-size:0.85rem; color:var(--text-color); opacity:0.7; margin-bottom:2px;">
+    <div style="text-align:center; font-size:0.85rem; color:var(--ink); opacity:0.7; margin-bottom:2px;">
       Underwater visibility
     </div>
     {_gauge_legend()}
