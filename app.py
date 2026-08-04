@@ -127,6 +127,8 @@ st.pydeck_chart(
     pdk.Deck(
         layers=[icon_layer, label_layer],
         initial_view_state=pdk.ViewState(latitude=row["latitude"], longitude=row["longitude"], zoom=12),
+        map_provider="carto",
+        map_style="light",
         tooltip=False,
     ),
     height=440,
