@@ -1,8 +1,9 @@
 """
 Underwater Visibility Predictor - interactive showcase.
 
-Shows live current conditions for all monitored dive sites at once.
-Prediction UI comes later once the R-trained model is exported.
+Shows live current conditions for one monitored dive site at a time, with a
+button to cycle through sites. Prediction UI comes later once the R-trained
+model is exported.
 """
 
 import os
@@ -20,9 +21,25 @@ DB_DSN = os.environ.get("DB_DSN") or st.secrets.get(
     "DB_DSN", "dbname=mydb user=myuser password=mypass host=localhost"
 )
 
-st.set_page_config(page_title="Visibility Predictor", page_icon="🤿")
-st.title("🤿 Underwater Visibility Predictor")
-st.caption("Dive sites in Mauritius")
+st.set_page_config(page_title="Visibility Predictor", page_icon="🤿", layout="wide")
+
+# Compact everything down so a single site's data fits on screen with no scroll.
+st.markdown(
+    """
+    <style>
+    div.block-container {padding-top: 1.2rem; padding-bottom: 1rem;}
+    #MainMenu, footer {visibility: hidden;}
+    h4 {font-size: 1.05rem !important; margin: 0 0 0.2rem 0 !important;}
+    [data-testid="stCaptionContainer"] p {font-size: 0.7rem !important;}
+    [data-testid="stMetricValue"] {font-size: 1.15rem !important;}
+    [data-testid="stMetricLabel"] p {font-size: 0.65rem !important;}
+    [data-testid="stMetric"] {padding: 0.2rem 0 !important;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown("##### 🤿 Underwater Visibility Predictor · Mauritius dive sites")
 
 
 @st.cache_data(ttl=3600)
@@ -64,29 +81,42 @@ def load_latest_ocean_color():
 locations = load_locations()
 ocean_color = load_latest_ocean_color()
 
-st.map(locations.rename(columns={"latitude": "lat", "longitude": "lon"}))
+if "site_idx" not in st.session_state:
+    st.session_state.site_idx = 0
 
-st.caption("Wave/current/rain refresh every ~15 min; ocean colour (KD490/ZSD/CHL) updated daily by a scheduled job")
+# Cycle site BEFORE reading which row to display, so the click takes effect this run.
+nav_prev, nav_label, nav_next = st.columns([1, 3, 1])
+if nav_prev.button("◀ Prev", use_container_width=True):
+    st.session_state.site_idx = (st.session_state.site_idx - 1) % len(locations)
+if nav_next.button("Next ▶", use_container_width=True):
+    st.session_state.site_idx = (st.session_state.site_idx + 1) % len(locations)
 
-for _, row in locations.iterrows():
-    live = get_live_conditions(row["latitude"], row["longitude"])
-    oc = ocean_color.loc[row["location_id"]] if row["location_id"] in ocean_color.index else None
+row = locations.iloc[st.session_state.site_idx]
+nav_label.markdown(
+    f"<div style='text-align:center; padding-top:0.4rem; font-size:0.85rem;'>"
+    f"{row['name']} &nbsp;({st.session_state.site_idx + 1}/{len(locations)})</div>",
+    unsafe_allow_html=True,
+)
 
-    st.subheader(row["name"])
-    oc_caption = f"ocean colour as of {oc['date']}" if oc is not None else "ocean colour: no data yet - run update_ocean_color.py"
-    st.caption(f"Wave/current/rain as of {live['time']} UTC - {oc_caption}")
+st.map(
+    pd.DataFrame([{"lat": row["latitude"], "lon": row["longitude"]}]),
+    zoom=12,
+    height=220,
+)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Wave height", f"{live['wave_height']} m")
-    c2.metric("Current speed", f"{live['ocean_current_velocity']} km/h")
-    c3.metric("Sea temperature", f"{live['sea_surface_temperature']} °C")
-    c4.metric("Rain right now", f"{live['precipitation']} mm")
+live = get_live_conditions(row["latitude"], row["longitude"])
+oc = ocean_color.loc[row["location_id"]] if row["location_id"] in ocean_color.index else None
 
-    c5, c6, c7 = st.columns(3)
-    c5.metric("Secchi depth (visibility)", f"{oc['zsd']:.1f} m" if oc is not None else "n/a")
-    c6.metric("Attenuation (KD490)", f"{oc['kd490']:.3f} /m" if oc is not None else "n/a")
-    c7.metric("Chlorophyll", f"{oc['chl']:.2f} mg/m³" if oc is not None else "n/a")
+oc_caption = f"ocean colour as of {oc['date']}" if oc is not None else "ocean colour: no data yet"
+st.caption(f"Wave/current/rain as of {live['time']} UTC · {oc_caption}")
 
-    st.divider()
+c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+c1.metric("Wave height", f"{live['wave_height']} m")
+c2.metric("Current speed", f"{live['ocean_current_velocity']} km/h")
+c3.metric("Sea temp", f"{live['sea_surface_temperature']} °C")
+c4.metric("Rain now", f"{live['precipitation']} mm")
+c5.metric("Secchi depth", f"{oc['zsd']:.1f} m" if oc is not None else "n/a")
+c6.metric("KD490", f"{oc['kd490']:.3f} /m" if oc is not None else "n/a")
+c7.metric("Chlorophyll", f"{oc['chl']:.2f} mg/m³" if oc is not None else "n/a")
 
-st.info("Prediction model not wired up yet - visibility forecast comes once the R-trained model is exported.")
+st.caption("Prediction model not wired up yet - forecast comes once the R-trained model is exported.")
