@@ -1,0 +1,355 @@
+---
+title: "Lantern Models"
+author: "Gert Vermeulen"
+date: "2026-07-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(nortest)
+library(leaps)
+library(car)
+library(dplyr)
+library(GGally)
+require(gridExtra)
+library(lubridate)
+library(forecast)
+library(xgboost)
+library(Matrix)
+library(caret)
+```
+
+## Data Preperation
+
+```{r}
+data = read.csv("gold_daily_features.csv")
+
+# Convert to factors
+data$location_name = as.factor(data$location_name) 
+
+# Drop duplicated information
+data$location_id <- NULL 
+
+# Interpret as dates
+data$date <- as.Date(data$date, format = "%Y-%m-%d")
+
+# Split data into full date range and short date range (with extra variables) 
+fullD = data[, !names(data) %in% c(
+  "ocean_current_velocity_mean",
+  "ocean_current_velocity_trend",
+  "ocean_current_velocity_min",
+  "ocean_current_velocity_max",
+  "ocean_current_direction_circular_mean",
+  "sea_surface_temperature_mean",
+  "sea_surface_temperature_trend",
+  "sea_surface_temperature_min",
+  "sea_surface_temperature_max"
+)]
+
+fullD <- fullD[complete.cases(fullD), ] # Entries from 18 Jul onwards are empty
+# era5_ocean is a reanalysis product, not a live forecast — it requires global observational data assimilation before it can produce a value, so it always trails "now" by roughly a week, no matter when you ask. 
+
+blue_bayFull   <- fullD %>% filter(location_name == "Blue Bay Marine Park")
+coin_mireFull  <- fullD %>% filter(location_name == "Coin de Mire (Djabeda Wreck)")
+cathedralFull  <- fullD %>% filter(location_name == "The Cathedral (Flic-en-Flac)")
+
+shortD = data[complete.cases(data), ]
+
+blue_bayShort   <- shortD %>% filter(location_name == "Blue Bay Marine Park")
+coin_mireShort  <- shortD %>% filter(location_name == "Coin de Mire (Djabeda Wreck)")
+cathedralShort  <- shortD %>% filter(location_name == "The Cathedral (Flic-en-Flac)")
+
+```
+
+
+# Data Exploration
+
+#### Range of the target variable
+```{r}
+min(fullD$zsd)
+max(fullD$zsd)
+
+```
+This means that secchi disk values are all positive and that the model should not make negative predictions
+
+# Check assumptions for linear regression
+
+```{r}
+
+# Linear Regression Assumptions
+global_mean = mean(fullD$zsd) # Global Mean
+group_means = aggregate(zsd~location_name, data = data, FUN = mean) # Group means
+ggplot(data = data, aes(x = location_name, y = zsd, fill = location_name)) + geom_boxplot() + ggtitle("Secchi Disk Distance based by Location") + stat_summary(fun = mean, geom = "point", shape = 18, size = 3, color = "darkred")+ xlab("Location") +  ylab("Average Secchi Disk Readings")+ theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+The means do differ, but Cathedral and coin de mire seem to be very similar.
+
+```{r}
+plot(x = fullD$kd490, y = fullD$zsd)
+
+plot(x = fullD$chl, y = fullD$zsd)
+
+# Transform the Day of the year into 2 cyclical features
+fullD <- fullD %>%
+  mutate(
+    day_of_year = yday(date),
+    sin_doy = sin(2 * pi * day_of_year / 365),
+    cos_doy = cos(2 * pi * day_of_year / 365)
+  )
+
+```
+No clear patrtern was found in the data, except for kd490  (diffuse attenuation coefficient at 490 nm) and chl (chlorophyll), which has a direct relationship to the secchi disk reading. This variable should not be used for modeling.
+Kd490 = -1/z * ln(E(z)/E(0))
+
+```{r}
+# Time Series
+
+# Extract year and day-of-year (or month) so all years plot on the same x-axis scale
+blue_bayFull <- blue_bayFull %>%
+  mutate(
+    year = factor(year(date)),        # year as a factor for discrete colors
+    day_of_year = yday(date)          # or use month(date) if data is coarser
+  )
+
+ggplot(blue_bayFull, aes(x = day_of_year, y = zsd, color = year)) +
+  geom_line() +
+  geom_point(size = 1, alpha = 0.6) +
+  scale_color_brewer(palette = "Set1") +   # nice distinct colors
+  labs(
+    title = "Secchi Disk Readings by Year (Blue Bay)",
+    x = "Day of Year",
+    y = "Secchi Disk Depth (zsd)",
+    color = "Year"
+  ) +
+  theme_minimal()
+
+coin_mireFull <- coin_mireFull %>%
+  mutate(
+    year = factor(year(date)),        # year as a factor for discrete colors
+    day_of_year = yday(date)          # or use month(date) if data is coarser
+  )
+
+ggplot(coin_mireFull, aes(x = day_of_year, y = zsd, color = year)) +
+  geom_line() +
+  geom_point(size = 1, alpha = 0.6) +
+  scale_color_brewer(palette = "Set1") +   # nice distinct colors
+  labs(
+    title = "Secchi Disk Readings by Year (Blue Bay)",
+    x = "Day of Year",
+    y = "Secchi Disk Depth (zsd)",
+    color = "Year"
+  ) +
+  theme_minimal()
+
+cathedralFull <- cathedralFull %>%
+  mutate(
+    year = factor(year(date)),        # year as a factor for discrete colors
+    day_of_year = yday(date)          # or use month(date) if data is coarser
+  )
+
+ggplot(cathedralFull, aes(x = day_of_year, y = zsd, color = year)) +
+  geom_line() +
+  geom_point(size = 1, alpha = 0.6) +
+  scale_color_brewer(palette = "Set1") +   # nice distinct colors
+  labs(
+    title = "Secchi Disk Readings by Year (Blue Bay)",
+    x = "Day of Year",
+    y = "Secchi Disk Depth (zsd)",
+    color = "Year"
+  ) +
+  theme_minimal()
+```
+No clear seasonality present and the grain is too fine to view the data in this graph. 
+Next graph only compares the month of January.
+
+
+```{r}
+# Average and median of zsd by month and location
+monthly_avg <- data %>%
+  mutate(month = month(date, label = TRUE)) %>%
+  group_by(location_name, month) %>%
+  summarise(
+    mean_zsd = mean(zsd, na.rm = TRUE),
+    median_zsd = median(zsd, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot with mean (solid) and median (dotted) lines
+ggplot(monthly_avg, aes(x = month, group = location_name, color = location_name)) +
+  geom_line(aes(y = mean_zsd), linewidth = 1) +
+  geom_point(aes(y = mean_zsd), size = 2) +
+  geom_line(aes(y = median_zsd), linetype = "dotted", linewidth = 1) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Average (solid) and Median (dotted) Secchi Disk Depth by Month",
+    x = "Month",
+    y = "Secchi Disk Depth (zsd)",
+    color = "Location Name"
+  ) +
+  theme_minimal()
+```
+A slightly more clear seasonality is visible when looking at the average visibility per month, however due to high variance (especially in Blue Bay), these might not be very accurate predictors.
+
+
+#### Autocovariance ACF
+
+```{r}
+# autocovariance
+acf(blue_bayFull$zsd,lag.max=20,type="covariance")
+acf(coin_mireFull$zsd,lag.max=20,type="covariance")
+acf(cathedralFull$zsd,lag.max=20,type="covariance")
+
+```
+#### Autocorrelation ACF
+```{r}
+# autocovariance
+acf(blue_bayFull$zsd,lag.max=20,type="correlation")
+acf(coin_mireFull$zsd,lag.max=20,type="correlation")
+acf(cathedralFull$zsd,lag.max=20,type="correlation")
+
+```
+From the autocorrelation and autocovariances, its seems that there is no clear seasonality or cycle and that the yesterday's visibility gives the most information on what the visibility with be today. For this reason amn AR(1) predictor is added to each location data
+
+```{r}
+
+## Full models
+blue_bayFull <- blue_bayFull %>%
+  arrange(date) %>%
+  mutate(zsd_lag1 = lag(zsd, n = 1)) %>%
+  mutate(zsd_lag1 = if_else(is.na(zsd_lag1), first(zsd), zsd_lag1))
+
+coin_mireFull <- coin_mireFull %>%
+  arrange(date) %>%
+  mutate(zsd_lag1 = lag(zsd, n = 1)) %>%
+  mutate(zsd_lag1 = if_else(is.na(zsd_lag1), first(zsd), zsd_lag1))
+
+cathedralFull <- cathedralFull %>%
+  arrange(date) %>%
+  mutate(zsd_lag1 = lag(zsd, n = 1)) %>%
+  mutate(zsd_lag1 = if_else(is.na(zsd_lag1), first(zsd), zsd_lag1))
+
+## Short models
+blue_bayShort <- blue_bayShort %>%
+  arrange(date) %>%
+  mutate(zsd_lag1 = lag(zsd, n = 1)) %>%
+  mutate(zsd_lag1 = if_else(is.na(zsd_lag1), first(zsd), zsd_lag1))
+
+coin_mireShort <- coin_mireShort %>%
+  arrange(date) %>%
+  mutate(zsd_lag1 = lag(zsd, n = 1)) %>%
+  mutate(zsd_lag1 = if_else(is.na(zsd_lag1), first(zsd), zsd_lag1))
+
+cathedralShort <- cathedralShort %>%
+  arrange(date) %>%
+  mutate(zsd_lag1 = lag(zsd, n = 1)) %>%
+  mutate(zsd_lag1 = if_else(is.na(zsd_lag1), first(zsd), zsd_lag1))
+
+```
+
+
+
+### Moving Average
+
+```{r}
+
+### Moving Average
+ts_data <- ts(blue_bayFull$zsd, frequency = 30)
+
+plot(ts_data, main = "Moving Average Trend (Blue Bay)",
+     xlab = "Time", ylab = "Secchi Disk Depth (zsd)")
+decomp <- decompose(ts_data)
+lines(decomp$trend, col = "red", lty = 2)
+legend("topright", legend = c("Raw Data", "Trend"),
+       col = c("black", "red"), lty = c(1, 2))
+
+ts_data <- ts(coin_mireFull$zsd, frequency = 30)
+
+plot(ts_data, main = "Moving Average Trend (Coin de Mire)",
+     xlab = "Time", ylab = "Secchi Disk Depth (zsd)")
+decomp <- decompose(ts_data)
+lines(decomp$trend, col = "red", lty = 2)
+legend("topright", legend = c("Raw Data", "Trend"),
+       col = c("black", "red"), lty = c(1, 2))
+
+ts_data <- ts(cathedralFull$zsd, frequency = 30)
+
+plot(ts_data, main = "Moving Average Trend (Cathedral)",
+     xlab = "Time", ylab = "Secchi Disk Depth (zsd)")
+decomp <- decompose(ts_data)
+lines(decomp$trend, col = "red", lty = 2)
+legend("topright", legend = c("Raw Data", "Trend"),
+       col = c("black", "red"), lty = c(1, 2))
+
+
+```
+These moving average graphs show a seasonality more clearly in the trend.
+
+
+
+### Split the data
+Data is split into a training set, validation set and test set.
+
+```{r}
+
+set.seed(123)
+
+n <- nrow(coin_mireShort)
+train_index <- sample(1:n, size = 0.7 * n)
+remaining <- setdiff(1:n, train_index)
+
+val_index <- sample(remaining, size = 0.5 * length(remaining))
+test_index <- setdiff(remaining, val_index)
+
+train_set <- coin_mireShort[train_index, ]
+val_set   <- coin_mireShort[val_index, ]
+test_set  <- coin_mireShort[test_index, ]
+
+# sanity check
+n == (nrow(train_set) + nrow(val_set) + nrow(test_set))
+n
+
+```
+
+### Linear Models
+
+####
+
+```{r}
+# Full Linear Model (with date variable removed)
+d <- train_set %>%
+  select(-location_name, -date, -kd490, -chl)
+CDMshortLM = lm(zsd~., data=d)
+
+Back_model = step(CDMshortLM,direction="backward", data=d)
+
+plot(Back_model$fitted.values, Back_model$residuals,
+     xlab = "Fitted values", ylab = "Residuals",
+     main = "Residuals vs Fitted")
+abline(h = 0, col = "red", lty = 2)
+
+anova(Back_model)
+Back_model_reduced = lm(formula = zsd ~ wave_height_mean + wave_period_mean  + wave_period_min + 
+    ocean_current_velocity_max + ocean_current_direction_circular_mean + sea_surface_temperature_max + 
+    zsd_lag1, data = d)
+
+
+plot(Back_model_reduced$fitted.values, Back_model_reduced$residuals,
+     xlab = "Fitted values", ylab = "Residuals",
+     main = "Residuals vs Fitted")
+abline(h = 0, col = "red", lty = 2)
+
+```
+The graph shows that a basic linear model would not be a good fit. Transforms might fix the issue to make the residuals linear
+
+```{r}
+
+Back_model_reduced_NL = lm(formula = log(zsd) ~ wave_height_mean + wave_period_mean  + wave_period_min + 
+    ocean_current_velocity_max + ocean_current_direction_circular_mean + sea_surface_temperature_max + 
+    zsd_lag1, data = d)
+
+a = anova(Back_model_reduced_NL)
+a$`Mean Sq`[nrow(a)]
+```
+

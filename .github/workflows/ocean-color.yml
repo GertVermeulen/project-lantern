@@ -1,0 +1,29 @@
+name: Update ocean colour + gold features
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  ocean-color:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements-jobs.txt
+
+      - run: python update_ocean_color.py
+        env:
+          DB_DSN: ${{ secrets.DB_DSN }}
+          COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.COPERNICUSMARINE_SERVICE_USERNAME }}
+          COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.COPERNICUSMARINE_SERVICE_PASSWORD }}
+
+      - run: python gold_pipeline.py
+        working-directory: Transform
+        env:
+          DB_DSN: ${{ secrets.DB_DSN }}

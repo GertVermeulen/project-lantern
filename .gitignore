@@ -1,0 +1,26 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE
+.idea/
+
+# OS / cloud-sync noise
+desktop.ini
+
+# Bronze raw data archive (large binaries, reproducible from source - see README)
+Collect Historical Data/Bronze Data/
+
+# Exported conversation transcripts
+Transcripts/
+
+# Gold layer CSV export (regenerate via Transform/export_gold_csv.py)
+Transform/*.csv
+Transform/R Models/*.csv
+
+# Streamlit local run log
+streamlit.log

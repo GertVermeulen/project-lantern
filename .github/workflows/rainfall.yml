@@ -1,0 +1,22 @@
+name: Update rainfall
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+
+jobs:
+  rainfall:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements-jobs.txt
+
+      - run: python weather_pipeline.py
+        env:
+          DB_DSN: ${{ secrets.DB_DSN }}
