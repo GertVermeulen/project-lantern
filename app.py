@@ -6,6 +6,7 @@ monitored dive site at a time, with a button to cycle through sites.
 """
 
 import base64
+import math
 import os
 
 import pandas as pd
@@ -105,6 +106,62 @@ def _card(icon, label, value, color=None):
       <div style="font-size:1.05rem; font-weight:600; color:var(--text-color);">{value}</div>
     </div>
     """
+
+
+# Gauge geometry: a semicircle from 180deg (left) to 0deg (right), in a
+# 0..GAUGE_MAX-scaled value space. Zone boundaries match visibility_tier()'s
+# good/excellent cutoffs (10m/20m) - "fair" folds into "poor" here since the
+# gauge only has three bands, same as the reference design.
+GAUGE_MAX = 40
+GAUGE_ZONE_BOUNDS = [0, 10, 20, GAUGE_MAX]
+GAUGE_ZONE_COLORS = [STATUS_COLORS["poor"], STATUS_COLORS["good"], STATUS_COLORS["excellent"]]
+
+
+def _polar_point(cx, cy, r, angle_deg):
+    rad = math.radians(angle_deg)
+    return cx + r * math.cos(rad), cy - r * math.sin(rad)
+
+
+def _gauge_svg(value, ink_color):
+    """A semicircular gauge (Poor/Good/Excellent zones + needle) for a 0..GAUGE_MAX reading."""
+    cx, cy, r = 100, 100, 75
+    arcs = []
+    for i in range(3):
+        a1 = 180 - (GAUGE_ZONE_BOUNDS[i] / GAUGE_MAX) * 180
+        a2 = 180 - (GAUGE_ZONE_BOUNDS[i + 1] / GAUGE_MAX) * 180
+        x1, y1 = _polar_point(cx, cy, r, a1)
+        x2, y2 = _polar_point(cx, cy, r, a2)
+        arcs.append(
+            f'<path d="M {x1:.1f},{y1:.1f} A {r},{r} 0 0 1 {x2:.1f},{y2:.1f}" '
+            f'stroke="{GAUGE_ZONE_COLORS[i]}" stroke-width="20" fill="none" stroke-linecap="round" />'
+        )
+
+    needle = ""
+    if value is not None:
+        angle = 180 - (max(0, min(GAUGE_MAX, value)) / GAUGE_MAX) * 180
+        tip_x, tip_y = _polar_point(cx, cy, 58, angle)
+        needle = (
+            f'<line x1="{cx}" y1="{cy}" x2="{tip_x:.1f}" y2="{tip_y:.1f}" '
+            f'stroke="{ink_color}" stroke-width="4" stroke-linecap="round" />'
+            f'<circle cx="{cx}" cy="{cy}" r="7" fill="{ink_color}" />'
+        )
+
+    return f"""
+    <svg viewBox="0 0 200 112" style="width:100%; max-width:380px; display:block; margin:0 auto;">
+      {"".join(arcs)}
+      {needle}
+    </svg>
+    """
+
+
+def _gauge_legend():
+    items = "".join(
+        f'<span style="display:inline-flex; align-items:center; gap:4px; margin:0 10px;">'
+        f'<span style="width:9px; height:9px; border-radius:50%; background:{GAUGE_ZONE_COLORS[i]}; display:inline-block;"></span>'
+        f'<span style="font-size:0.72rem; color:var(--text-color); opacity:0.75;">{label}</span></span>'
+        for i, label in enumerate(["Poor", "Good", "Excellent"])
+    )
+    return f'<div style="text-align:center; margin-top:2px;">{items}</div>'
 
 
 DB_DSN = os.environ.get("DB_DSN") or st.secrets.get(
@@ -257,21 +314,17 @@ tiers = {
 # satellite reading, which becomes a supporting card instead.
 if predicted_zsd is not None:
     hero_value = f"{predicted_zsd:.1f} m"
-    hero_label = "Predicted visibility (today, model)"
+    hero_note = "Model prediction for today"
     hero_zsd = predicted_zsd
 elif oc is not None:
     hero_value = f"{oc['zsd']:.1f} m"
-    hero_label = "Visibility (last satellite reading - model needs a live feed first)"
+    hero_note = f"Last satellite reading ({oc['date']}) - model needs a live feed first"
     hero_zsd = oc["zsd"]
 else:
-    hero_value, hero_label, hero_zsd = "n/a", "Visibility", None
+    hero_value, hero_note, hero_zsd = "n/a", "No data yet", None
 
 if hero_zsd is not None:
     tiers["visibility"] = visibility_tier(hero_zsd)
-    hero_color = STATUS_COLORS[tiers["visibility"]]
-    hero_pct = max(0, min(100, hero_zsd / 40 * 100))  # 40m ~ exceptional reef visibility ceiling
-else:
-    hero_color, hero_pct = "#898781", 0
 
 overall_tier = min(tiers.values(), key=lambda t: TIER_RANK[t])
 overall_color = STATUS_COLORS[overall_tier]
@@ -296,14 +349,32 @@ st.markdown(
       <span style="font-size:1.3rem;">🤿</span>
       <span style="font-weight:700; font-size:0.95rem; color:var(--text-color);">{overall_label} diving conditions</span>
     </div>
-    <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
-      <span style="font-size:2.6rem; font-weight:700; color:var(--text-color); line-height:1;">{hero_value}</span>
-      <span style="font-size:0.75rem; color:var(--text-color); opacity:0.65;">{hero_label}</span>
+    """,
+    unsafe_allow_html=True,
+)
+
+gauge_col, cards_col = st.columns([2, 3])
+
+gauge_col.markdown(
+    f"""
+    <div style="text-align:center; font-size:0.68rem; color:var(--text-color); opacity:0.6; margin-bottom:2px;">
+      {hero_note}
     </div>
-    <div style="width:100%; height:10px; border-radius:6px; background:{_hex_to_rgba(hero_color, 0.18)}; margin-bottom:12px;">
-      <div style="width:{hero_pct:.0f}%; height:100%; border-radius:6px; background:{hero_color};"></div>
+    {_gauge_svg(hero_zsd, "var(--text-color)")}
+    <div style="text-align:center; font-size:2.8rem; font-weight:700; color:var(--text-color); line-height:1; margin-top:2px;">
+      {hero_value}
     </div>
-    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+    <div style="text-align:center; font-size:0.85rem; color:var(--text-color); opacity:0.7; margin-bottom:2px;">
+      Underwater visibility
+    </div>
+    {_gauge_legend()}
+    """,
+    unsafe_allow_html=True,
+)
+
+cards_col.markdown(
+    f"""
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
       {"".join(cards)}
     </div>
     """,
