@@ -6,6 +6,7 @@ button to cycle through sites. Prediction UI comes later once the R-trained
 model is exported.
 """
 
+import base64
 import os
 
 import pandas as pd
@@ -17,6 +18,22 @@ from dotenv import load_dotenv
 from live_data import fetch_current_conditions
 
 load_dotenv()
+
+# Classic map-pin marker, inlined as a data URI so the icon renders without an
+# external asset request (deck.gl's TextLayer can't render color emoji glyphs,
+# hence a real IconLayer here instead of a "📍" text glyph).
+_PIN_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="36" viewBox="0 0 24 36">'
+    '<path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 24 12 24s12-15 12-24C24 5.373 18.627 0 12 0z" fill="#d62728"/>'
+    '<circle cx="12" cy="12" r="5" fill="white"/>'
+    "</svg>"
+)
+PIN_ICON = {
+    "url": "data:image/svg+xml;base64," + base64.b64encode(_PIN_SVG.encode()).decode(),
+    "width": 24,
+    "height": 36,
+    "anchorY": 36,
+}
 
 DB_DSN = os.environ.get("DB_DSN") or st.secrets.get(
     "DB_DSN", "dbname=mydb user=myuser password=mypass host=localhost"
@@ -100,16 +117,16 @@ nav_label.markdown(
 )
 
 site_point = pd.DataFrame([{"lat": row["latitude"], "lon": row["longitude"], "name": row["name"]}])
+site_point["icon_data"] = [PIN_ICON]
 
 icon_layer = pdk.Layer(
-    "TextLayer",
+    "IconLayer",
     data=site_point,
+    get_icon="icon_data",
     get_position=["lon", "lat"],
-    get_text="'📍'",
     get_size=36,
-    get_color=[220, 30, 30],
-    get_text_anchor="'middle'",
-    get_alignment_baseline="'bottom'",
+    size_scale=1,
+    get_color=[255, 255, 255],  # multiplies the icon's own colors - white = no tint
 )
 label_layer = pdk.Layer(
     "TextLayer",
