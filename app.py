@@ -16,7 +16,7 @@ from live_data import fetch_current_conditions
 
 load_dotenv()
 
-DB_DSN = os.environ.get(
+DB_DSN = os.environ.get("DB_DSN") or st.secrets.get(
     "DB_DSN", "dbname=mydb user=myuser password=mypass host=localhost"
 )
 
