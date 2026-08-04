@@ -303,7 +303,14 @@ st.pydeck_chart(
     height=440,
 )
 
-live = get_live_conditions(row["latitude"], row["longitude"])
+try:
+    live = get_live_conditions(row["latitude"], row["longitude"])
+except Exception:
+    # Open-Meteo's free tier rate-limits under heavy traffic - the map,
+    # prediction, and last-satellite reading don't depend on this snapshot,
+    # so a failure here shouldn't take down the whole page.
+    live = None
+
 oc = ocean_color.loc[row["location_id"]] if row["location_id"] in ocean_color.index else None
 
 booster = load_model()
@@ -312,13 +319,16 @@ zsd_lag1 = float(oc["zsd"]) if oc is not None else None
 predicted_zsd = predict.predict_visibility(booster, live_features, row["name"], zsd_lag1)
 
 oc_caption = f"ocean colour as of {oc['date']}" if oc is not None else "ocean colour: no data yet"
-st.caption(f"Wave/current/rain as of {live['time']} UTC · {oc_caption}")
+if live is not None:
+    st.caption(f"Wave/current/rain as of {live['time']} UTC · {oc_caption}")
+else:
+    st.caption(f"Wave/current/rain: temporarily unavailable (rate-limited) · {oc_caption}")
 
-tiers = {
-    "wave": wave_tier(live["wave_height"]),
-    "current": current_tier(live["ocean_current_velocity"]),
-    "rain": rain_tier(live["precipitation"]),
-}
+tiers = {}
+if live is not None:
+    tiers["wave"] = wave_tier(live["wave_height"])
+    tiers["current"] = current_tier(live["ocean_current_velocity"])
+    tiers["rain"] = rain_tier(live["precipitation"])
 
 # The hero figure is the model's prediction for today - not yesterday's
 # satellite reading, which becomes a supporting card instead.
@@ -336,16 +346,23 @@ else:
 if hero_zsd is not None:
     tiers["visibility"] = visibility_tier(hero_zsd)
 
-overall_tier = min(tiers.values(), key=lambda t: TIER_RANK[t])
-overall_color = STATUS_COLORS[overall_tier]
-overall_label = TIER_LABEL[overall_tier]
+if tiers:
+    overall_tier = min(tiers.values(), key=lambda t: TIER_RANK[t])
+    overall_color = STATUS_COLORS[overall_tier]
+    overall_label = TIER_LABEL[overall_tier]
+else:
+    overall_color, overall_label = "#898781", "Unknown"
 
-cards = [
-    _card("🌊", "Wave height", f"{live['wave_height']} m", STATUS_COLORS[tiers["wave"]]),
-    _card("🌀", "Current", f"{live['ocean_current_velocity']} km/h", STATUS_COLORS[tiers["current"]]),
-    _card("🌧️", "Rain now", f"{live['precipitation']} mm", STATUS_COLORS[tiers["rain"]]),
-    _card("🌡️", "Sea temp", f"{live['sea_surface_temperature']} °C"),
-]
+cards = []
+if live is not None:
+    cards.extend([
+        _card("🌊", "Wave height", f"{live['wave_height']} m", STATUS_COLORS[tiers["wave"]]),
+        _card("🌀", "Current", f"{live['ocean_current_velocity']} km/h", STATUS_COLORS[tiers["current"]]),
+        _card("🌧️", "Rain now", f"{live['precipitation']} mm", STATUS_COLORS[tiers["rain"]]),
+        _card("🌡️", "Sea temp", f"{live['sea_surface_temperature']} °C"),
+    ])
+else:
+    cards.append(_card("⚠️", "Live conditions", "Rate-limited - retrying automatically"))
 if oc is not None:
     cards.append(_card("🛰️", f"Last satellite ({oc['date']})", f"{oc['zsd']:.1f} m"))
     cards.append(_card("🔬", "Attenuation (KD490)", f"{oc['kd490']:.3f} /m"))
