@@ -352,4 +352,66 @@ Back_model_reduced_NL = lm(formula = log(zsd) ~ wave_height_mean + wave_period_m
 a = anova(Back_model_reduced_NL)
 a$`Mean Sq`[nrow(a)]
 ```
+### XGBoost
+
+```{r}
+
+# Columns to exclude from modeling
+exclude_cols <- c("zsd", "date", "kd490", "chl")
+
+make_matrix <- function(df, reference_cols = NULL) {
+  predictors <- df[, setdiff(names(df), exclude_cols)]
+  mat <- sparse.model.matrix(~ . - 1, data = predictors)
+  
+  if (!is.null(reference_cols)) {
+    missing_cols <- setdiff(reference_cols, colnames(mat))
+    for (col in missing_cols) mat <- cbind(mat, setNames(data.frame(rep(0, nrow(mat))), col))
+    mat <- mat[, reference_cols]
+  }
+  mat
+}
+
+train_matrix <- make_matrix(train_set)
+val_matrix   <- make_matrix(val_set, reference_cols = colnames(train_matrix))
+test_matrix  <- make_matrix(test_set, reference_cols = colnames(train_matrix))
+
+# Targets
+train_label <- train_set$zsd
+val_label   <- val_set$zsd
+test_label  <- test_set$zsd
+
+# DMatrices
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+dval   <- xgb.DMatrix(data = val_matrix, label = val_label)
+dtest  <- xgb.DMatrix(data = test_matrix, label = test_label)
+
+params <- list(
+  objective = "reg:squarederror",  # adjust based on what zsd is
+  eval_metric = "rmse",
+  max_depth = 4,
+  eta = 0.1,
+  subsample = 0.8,
+  colsample_bytree = 0.8
+)
+
+model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 500,
+  watchlist = list(train = dtrain, val = dval),
+  early_stopping_rounds = 10,
+  verbose = 1
+)
+
+preds <- predict(model, dtest)
+
+# regression example
+rmse <- sqrt(mean((preds - test_label)^2))
+rmse
+
+```
+
+```{r}
+xgb.save(model, "XGmodel.json")
+```
 

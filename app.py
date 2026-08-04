@@ -1,9 +1,8 @@
 """
 Underwater Visibility Predictor - interactive showcase.
 
-Shows live current conditions for one monitored dive site at a time, with a
-button to cycle through sites. Prediction UI comes later once the R-trained
-model is exported.
+Shows live current conditions and a model-predicted visibility for one
+monitored dive site at a time, with a button to cycle through sites.
 """
 
 import base64
@@ -15,6 +14,7 @@ import pydeck as pdk
 import streamlit as st
 from dotenv import load_dotenv
 
+import predict
 from live_data import fetch_current_conditions
 
 load_dotenv()
@@ -151,6 +151,19 @@ def get_live_conditions(lat, lon):
     return data
 
 
+@st.cache_resource
+def load_model():
+    return predict.load_model()
+
+
+@st.cache_data(ttl=900)  # same cadence as the marine_recent.py / weather_pipeline.py schedule
+def get_live_features(location_id):
+    conn = psycopg2.connect(DB_DSN)
+    data = predict.get_live_features(conn, location_id)
+    conn.close()
+    return data
+
+
 @st.cache_data(ttl=3600)
 def load_latest_ocean_color():
     """Latest non-null row per location - updated on a schedule by update_ocean_color.py."""
@@ -226,6 +239,11 @@ st.pydeck_chart(
 live = get_live_conditions(row["latitude"], row["longitude"])
 oc = ocean_color.loc[row["location_id"]] if row["location_id"] in ocean_color.index else None
 
+booster = load_model()
+live_features = get_live_features(row["location_id"])
+zsd_lag1 = float(oc["zsd"]) if oc is not None else None
+predicted_zsd = predict.predict_visibility(booster, live_features, row["name"], zsd_lag1)
+
 oc_caption = f"ocean colour as of {oc['date']}" if oc is not None else "ocean colour: no data yet"
 st.caption(f"Wave/current/rain as of {live['time']} UTC · {oc_caption}")
 
@@ -234,19 +252,30 @@ tiers = {
     "current": current_tier(live["ocean_current_velocity"]),
     "rain": rain_tier(live["precipitation"]),
 }
-if oc is not None:
-    tiers["visibility"] = visibility_tier(oc["zsd"])
+
+# The hero figure is the model's prediction for today - not yesterday's
+# satellite reading, which becomes a supporting card instead.
+if predicted_zsd is not None:
+    hero_value = f"{predicted_zsd:.1f} m"
+    hero_label = "Predicted visibility (today, model)"
+    hero_zsd = predicted_zsd
+elif oc is not None:
+    hero_value = f"{oc['zsd']:.1f} m"
+    hero_label = "Visibility (last satellite reading - model needs a live feed first)"
+    hero_zsd = oc["zsd"]
+else:
+    hero_value, hero_label, hero_zsd = "n/a", "Visibility", None
+
+if hero_zsd is not None:
+    tiers["visibility"] = visibility_tier(hero_zsd)
+    hero_color = STATUS_COLORS[tiers["visibility"]]
+    hero_pct = max(0, min(100, hero_zsd / 40 * 100))  # 40m ~ exceptional reef visibility ceiling
+else:
+    hero_color, hero_pct = "#898781", 0
 
 overall_tier = min(tiers.values(), key=lambda t: TIER_RANK[t])
 overall_color = STATUS_COLORS[overall_tier]
 overall_label = TIER_LABEL[overall_tier]
-
-if oc is not None:
-    vis_color = STATUS_COLORS[tiers["visibility"]]
-    vis_value = f"{oc['zsd']:.1f} m"
-    vis_pct = max(0, min(100, oc["zsd"] / 40 * 100))  # 40m ~ exceptional reef visibility ceiling
-else:
-    vis_color, vis_value, vis_pct = "#898781", "n/a", 0
 
 cards = [
     _card("🌊", "Wave height", f"{live['wave_height']} m", STATUS_COLORS[tiers["wave"]]),
@@ -255,6 +284,7 @@ cards = [
     _card("🌡️", "Sea temp", f"{live['sea_surface_temperature']} °C"),
 ]
 if oc is not None:
+    cards.append(_card("🛰️", f"Last satellite ({oc['date']})", f"{oc['zsd']:.1f} m"))
     cards.append(_card("🔬", "Attenuation (KD490)", f"{oc['kd490']:.3f} /m"))
     cards.append(_card("🌿", "Chlorophyll", f"{oc['chl']:.2f} mg/m³"))
 
@@ -267,11 +297,11 @@ st.markdown(
       <span style="font-weight:700; font-size:0.95rem; color:var(--text-color);">{overall_label} diving conditions</span>
     </div>
     <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
-      <span style="font-size:2.6rem; font-weight:700; color:var(--text-color); line-height:1;">{vis_value}</span>
-      <span style="font-size:0.75rem; color:var(--text-color); opacity:0.65;">Visibility (Secchi depth)</span>
+      <span style="font-size:2.6rem; font-weight:700; color:var(--text-color); line-height:1;">{hero_value}</span>
+      <span style="font-size:0.75rem; color:var(--text-color); opacity:0.65;">{hero_label}</span>
     </div>
-    <div style="width:100%; height:10px; border-radius:6px; background:{_hex_to_rgba(vis_color, 0.18)}; margin-bottom:12px;">
-      <div style="width:{vis_pct:.0f}%; height:100%; border-radius:6px; background:{vis_color};"></div>
+    <div style="width:100%; height:10px; border-radius:6px; background:{_hex_to_rgba(hero_color, 0.18)}; margin-bottom:12px;">
+      <div style="width:{hero_pct:.0f}%; height:100%; border-radius:6px; background:{hero_color};"></div>
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       {"".join(cards)}
@@ -281,6 +311,8 @@ st.markdown(
 )
 
 st.caption(
-    "Diving-conditions badge is a simple rule-of-thumb (worst of wave/current/rain/visibility), "
-    "not the trained model - forecast comes once the R model is exported."
+    "Predicted visibility comes from an XGBoost model trained on Coin de Mire (Djabeda Wreck) "
+    "historical data - applied to the other two sites' own live readings, but not fit to them "
+    "specifically. Diving-conditions badge is a simple rule-of-thumb (worst of "
+    "wave/current/rain/visibility), not the model's own judgment."
 )

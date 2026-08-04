@@ -1,5 +1,7 @@
-# Recent rainfall snapshot, run on a schedule
-name: Update rainfall
+# Recent rainfall + marine snapshot, run on a schedule. Keeps weather_hourly
+# and marine_hourly topped up so the live-prediction trailing-24h feature
+# window (used by app.py) always has fresh data to aggregate.
+name: Update live feeds
 
 on:
   schedule:
@@ -7,7 +9,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  rainfall:
+  live-feeds:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,5 +21,9 @@ jobs:
       - run: pip install -r requirements-jobs.txt
 
       - run: python weather_pipeline.py
+        env:
+          DB_DSN: ${{ secrets.DB_DSN }}
+
+      - run: python marine_recent.py
         env:
           DB_DSN: ${{ secrets.DB_DSN }}

@@ -20,7 +20,7 @@ Transcripts/
 
 # Gold layer CSV export (regenerate via Transform/export_gold_csv.py)
 Transform/*.csv
-Transform/R Models/*.csv
+R Models/*.csv
 
 # Streamlit local run log
 streamlit.log
