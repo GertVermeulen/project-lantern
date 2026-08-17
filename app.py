@@ -16,6 +16,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 import predict
+import predict_linear
 from live_data import fetch_current_conditions
 
 load_dotenv()
@@ -223,6 +224,14 @@ def load_model():
     return predict.load_model()
 
 
+@st.cache_resource
+def load_linear_model():
+    """None if the linear model hasn't been exported yet - see predict_linear.py."""
+    if not os.path.exists(predict_linear.MODEL_PATH):
+        return None
+    return predict_linear.load_model()
+
+
 @st.cache_data(ttl=900)  # same cadence as the marine_recent.py / weather_pipeline.py schedule
 def get_live_features(location_id):
     conn = psycopg2.connect(DB_DSN)
@@ -270,14 +279,22 @@ def load_zsd_history(location_id):
     return df
 
 
+# Insertion order fixes the chart's column/color order regardless of the
+# DB's own (alphabetical) pivot order - see load_prediction_history.
+MODEL_LABELS = {
+    "xgboost": "Predicted (XGBoost)",
+    "linear_log": "Predicted (linear, log-target)",
+}
+
+
 @st.cache_data(ttl=3600)
 def load_prediction_history(location_id):
-    """Daily logged predictions for one location, last 3 months - see predict_daily.py."""
+    """Daily logged predictions for one location, pivoted by model, last 3 months - see predict_daily.py."""
     conn = psycopg2.connect(DB_DSN)
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT date, predicted_zsd
+            SELECT date, model_name, predicted_zsd
             FROM predictions
             WHERE location_id = %s
               AND date >= CURRENT_DATE - INTERVAL '3 months'
@@ -287,9 +304,12 @@ def load_prediction_history(location_id):
         )
         rows = cur.fetchall()
     conn.close()
-    df = pd.DataFrame(rows, columns=["date", "predicted_zsd"])
+    if not rows:
+        return pd.DataFrame(columns=["date"])
+    df = pd.DataFrame(rows, columns=["date", "model_name", "predicted_zsd"])
     df["date"] = pd.to_datetime(df["date"])
-    return df
+    pivoted = df.pivot_table(index="date", columns="model_name", values="predicted_zsd").reset_index()
+    return pivoted.rename(columns=MODEL_LABELS)
 
 
 locations = load_locations()
@@ -361,9 +381,15 @@ except Exception:
 oc = ocean_color.loc[row["location_id"]] if row["location_id"] in ocean_color.index else None
 
 booster = load_model()
+linear_model = load_linear_model()
 live_features = get_live_features(row["location_id"])
 zsd_lag1 = float(oc["zsd"]) if oc is not None else None
 predicted_zsd = predict.predict_visibility(booster, live_features, row["name"], zsd_lag1)
+linear_predicted_zsd = (
+    predict_linear.predict_visibility(linear_model, live_features, zsd_lag1)
+    if linear_model is not None
+    else None
+)
 
 oc_caption = f"ocean colour as of {oc['date']}" if oc is not None else "ocean colour: no data yet"
 if live is not None:
@@ -414,6 +440,8 @@ if oc is not None:
     cards.append(_card("🛰️", f"Last satellite ({oc['date']})", f"{oc['zsd']:.1f} m"))
     cards.append(_card("🔬", "Attenuation (KD490)", f"{oc['kd490']:.3f} /m"))
     cards.append(_card("🌿", "Chlorophyll", f"{oc['chl']:.2f} mg/m³"))
+if linear_predicted_zsd is not None:
+    cards.append(_card("📐", "Linear model (log)", f"{linear_predicted_zsd:.1f} m"))
 
 tab_live.markdown(
     f"""
@@ -470,13 +498,17 @@ with tab_history:
     else:
         merged = pd.merge(
             actual.rename(columns={"zsd": "Actual (satellite)"}),
-            predicted.rename(columns={"predicted_zsd": "Predicted"}),
+            predicted,
             on="date",
             how="outer",
         ).sort_values("date")
+        series_cols = ["Actual (satellite)"] + [
+            c for c in MODEL_LABELS.values() if c in merged.columns
+        ]
+        series_colors = ["#2a78d6", "#eb6834", "#1baf7a"][: len(series_cols)]
         st.line_chart(
-            merged.set_index("date")[["Actual (satellite)", "Predicted"]],
-            color=["#2a78d6", "#eb6834"],
+            merged.set_index("date")[series_cols],
+            color=series_colors,
             height=340,
             use_container_width=True,
         )

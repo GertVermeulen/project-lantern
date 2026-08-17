@@ -1,0 +1,1 @@
+{"coefficients":{"(Intercept)":2.439580392,"wave_height_mean":0.029078189047,"wave_period_mean":0.037358784308,"wave_period_min":-0.047948121831,"ocean_current_velocity_trend":-0.23933419787,"ocean_current_velocity_max":-0.012839041942,"sea_surface_temperature_max":0.02099404442,"wave_direction_sin_mean":0.025730456743,"zsd_lag1":0.014230938239},"smearing_factor":1.0095760496}
