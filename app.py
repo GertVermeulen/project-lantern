@@ -270,6 +270,28 @@ def load_zsd_history(location_id):
     return df
 
 
+@st.cache_data(ttl=3600)
+def load_prediction_history(location_id):
+    """Daily logged predictions for one location, last 3 months - see predict_daily.py."""
+    conn = psycopg2.connect(DB_DSN)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT date, predicted_zsd
+            FROM predictions
+            WHERE location_id = %s
+              AND date >= CURRENT_DATE - INTERVAL '3 months'
+            ORDER BY date
+            """,
+            (int(location_id),),
+        )
+        rows = cur.fetchall()
+    conn.close()
+    df = pd.DataFrame(rows, columns=["date", "predicted_zsd"])
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
 locations = load_locations()
 ocean_color = load_latest_ocean_color()
 
@@ -440,20 +462,29 @@ tab_live.caption(
     "wave/current/rain/visibility), not the model's own judgment."
 )
 with tab_history:
-    history = load_zsd_history(row["location_id"])
+    actual = load_zsd_history(row["location_id"])
+    predicted = load_prediction_history(row["location_id"])
     st.caption(f"Satellite-derived visibility (Secchi depth) at {row['name']} · last 3 months")
-    if history.empty:
+    if actual.empty and predicted.empty:
         st.info("No ocean-colour readings yet for this site.")
     else:
+        merged = pd.merge(
+            actual.rename(columns={"zsd": "Actual (satellite)"}),
+            predicted.rename(columns={"predicted_zsd": "Predicted"}),
+            on="date",
+            how="outer",
+        ).sort_values("date")
         st.line_chart(
-            history.set_index("date")["zsd"],
-            color="#2a78d6",
+            merged.set_index("date")[["Actual (satellite)", "Predicted"]],
+            color=["#2a78d6", "#eb6834"],
             height=340,
             use_container_width=True,
         )
+        if predicted.empty:
+            st.caption("Predictions are logged daily going forward (see predict_daily.py) - none recorded yet for this site.")
         with st.expander("View as table"):
             st.dataframe(
-                history.rename(columns={"date": "Date", "zsd": "Visibility (m)"}),
+                merged.rename(columns={"date": "Date"}),
                 use_container_width=True,
                 hide_index=True,
             )

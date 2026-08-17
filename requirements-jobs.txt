@@ -5,3 +5,4 @@ xarray
 numpy
 h5netcdf
 copernicusmarine
+xgboost

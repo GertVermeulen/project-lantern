@@ -1,0 +1,24 @@
+name: Log daily prediction
+
+on:
+  schedule:
+    # 30 minutes after the ocean-color job (04:00 UTC), so this run picks up
+    # that day's freshest zsd_lag1.
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  predict-daily:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements-jobs.txt
+
+      - run: python predict_daily.py
+        env:
+          DB_DSN: ${{ secrets.DB_DSN }}
