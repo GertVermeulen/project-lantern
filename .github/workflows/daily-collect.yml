@@ -1,0 +1,33 @@
+name: Daily data collection
+
+on:
+  schedule:
+    # 42 minutes past 03:00 UTC, once a day - after Copernicus Marine's NRT
+    # ocean-colour product has usually finished its ~1 day processing lag.
+    - cron: "42 3 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements-jobs.txt
+
+      - name: Update ocean colour (KD490/ZSD/CHL)
+        env:
+          DB_DSN: ${{ secrets.DB_DSN }}
+          COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.COPERNICUSMARINE_SERVICE_USERNAME }}
+          COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.COPERNICUSMARINE_SERVICE_PASSWORD }}
+        run: python update_ocean_color.py
+
+      - name: Build gold daily features
+        env:
+          DB_DSN: ${{ secrets.DB_DSN }}
+        run: python "Transform/gold_pipeline.py"
