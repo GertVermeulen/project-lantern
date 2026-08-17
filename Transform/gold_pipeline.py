@@ -13,9 +13,12 @@ Aggregation from hourly to daily:
       accumulation is what matters for runoff, not the average rate).
     - wave_direction/ocean_current_direction are circular (0/360 are the
       same value) - averaging or trending raw degrees breaks at the
-      wraparound, so these only get a circular mean (via atan2 of the
-      mean sin/cos), not trend/min/max, since "max compass bearing" isn't
-      a meaningful quantity.
+      wraparound, so instead of a scalar mean these are represented as
+      unit vectors: the mean sin and mean cos of the hourly readings, plus
+      the mean resultant length R = sqrt(mean_sin^2 + mean_cos^2) as a
+      "concentration" score (1 = all hourly readings pointed the same way,
+      0 = scattered/opposing). No trend/min/max, since "max compass
+      bearing" isn't a meaningful quantity.
 
 ocean_color_daily is already daily grain, so it's joined in as-is with no
 aggregation. It's the spine of the join (LEFT JOIN target) since it's the
@@ -52,16 +55,20 @@ WITH marine_agg AS (
         MIN(wave_period) AS wave_period_min,
         MAX(wave_period) AS wave_period_max,
 
-        MOD(DEGREES(ATAN2(AVG(SIN(RADIANS(wave_direction))), AVG(COS(RADIANS(wave_direction)))))::numeric + 360, 360)
-            AS wave_direction_circular_mean,
+        AVG(SIN(RADIANS(wave_direction))) AS wave_direction_sin_mean,
+        AVG(COS(RADIANS(wave_direction))) AS wave_direction_cos_mean,
+        SQRT(POWER(AVG(SIN(RADIANS(wave_direction))), 2) + POWER(AVG(COS(RADIANS(wave_direction))), 2))
+            AS wave_direction_concentration,
 
         AVG(ocean_current_velocity) AS ocean_current_velocity_mean,
         regr_slope(ocean_current_velocity, EXTRACT(HOUR FROM ts)) AS ocean_current_velocity_trend,
         MIN(ocean_current_velocity) AS ocean_current_velocity_min,
         MAX(ocean_current_velocity) AS ocean_current_velocity_max,
 
-        MOD(DEGREES(ATAN2(AVG(SIN(RADIANS(ocean_current_direction))), AVG(COS(RADIANS(ocean_current_direction)))))::numeric + 360, 360)
-            AS ocean_current_direction_circular_mean,
+        AVG(SIN(RADIANS(ocean_current_direction))) AS ocean_current_direction_sin_mean,
+        AVG(COS(RADIANS(ocean_current_direction))) AS ocean_current_direction_cos_mean,
+        SQRT(POWER(AVG(SIN(RADIANS(ocean_current_direction))), 2) + POWER(AVG(COS(RADIANS(ocean_current_direction))), 2))
+            AS ocean_current_direction_concentration,
 
         AVG(sea_surface_temperature) AS sea_surface_temperature_mean,
         regr_slope(sea_surface_temperature, EXTRACT(HOUR FROM ts)) AS sea_surface_temperature_trend,
@@ -85,9 +92,9 @@ INSERT INTO gold.daily_features (
     location_id, date,
     wave_height_mean, wave_height_trend, wave_height_min, wave_height_max,
     wave_period_mean, wave_period_trend, wave_period_min, wave_period_max,
-    wave_direction_circular_mean,
+    wave_direction_sin_mean, wave_direction_cos_mean, wave_direction_concentration,
     ocean_current_velocity_mean, ocean_current_velocity_trend, ocean_current_velocity_min, ocean_current_velocity_max,
-    ocean_current_direction_circular_mean,
+    ocean_current_direction_sin_mean, ocean_current_direction_cos_mean, ocean_current_direction_concentration,
     sea_surface_temperature_mean, sea_surface_temperature_trend, sea_surface_temperature_min, sea_surface_temperature_max,
     precipitation_sum, precipitation_trend, precipitation_min, precipitation_max,
     kd490, zsd, chl
@@ -96,9 +103,9 @@ SELECT
     o.location_id, o.date,
     m.wave_height_mean, m.wave_height_trend, m.wave_height_min, m.wave_height_max,
     m.wave_period_mean, m.wave_period_trend, m.wave_period_min, m.wave_period_max,
-    m.wave_direction_circular_mean,
+    m.wave_direction_sin_mean, m.wave_direction_cos_mean, m.wave_direction_concentration,
     m.ocean_current_velocity_mean, m.ocean_current_velocity_trend, m.ocean_current_velocity_min, m.ocean_current_velocity_max,
-    m.ocean_current_direction_circular_mean,
+    m.ocean_current_direction_sin_mean, m.ocean_current_direction_cos_mean, m.ocean_current_direction_concentration,
     m.sea_surface_temperature_mean, m.sea_surface_temperature_trend, m.sea_surface_temperature_min, m.sea_surface_temperature_max,
     w.precipitation_sum, w.precipitation_trend, w.precipitation_min, w.precipitation_max,
     o.kd490, o.zsd, o.chl
@@ -114,12 +121,16 @@ ON CONFLICT (location_id, date) DO UPDATE SET
     wave_period_trend = EXCLUDED.wave_period_trend,
     wave_period_min = EXCLUDED.wave_period_min,
     wave_period_max = EXCLUDED.wave_period_max,
-    wave_direction_circular_mean = EXCLUDED.wave_direction_circular_mean,
+    wave_direction_sin_mean = EXCLUDED.wave_direction_sin_mean,
+    wave_direction_cos_mean = EXCLUDED.wave_direction_cos_mean,
+    wave_direction_concentration = EXCLUDED.wave_direction_concentration,
     ocean_current_velocity_mean = EXCLUDED.ocean_current_velocity_mean,
     ocean_current_velocity_trend = EXCLUDED.ocean_current_velocity_trend,
     ocean_current_velocity_min = EXCLUDED.ocean_current_velocity_min,
     ocean_current_velocity_max = EXCLUDED.ocean_current_velocity_max,
-    ocean_current_direction_circular_mean = EXCLUDED.ocean_current_direction_circular_mean,
+    ocean_current_direction_sin_mean = EXCLUDED.ocean_current_direction_sin_mean,
+    ocean_current_direction_cos_mean = EXCLUDED.ocean_current_direction_cos_mean,
+    ocean_current_direction_concentration = EXCLUDED.ocean_current_direction_concentration,
     sea_surface_temperature_mean = EXCLUDED.sea_surface_temperature_mean,
     sea_surface_temperature_trend = EXCLUDED.sea_surface_temperature_trend,
     sea_surface_temperature_min = EXCLUDED.sea_surface_temperature_min,

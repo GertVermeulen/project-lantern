@@ -248,6 +248,28 @@ def load_latest_ocean_color():
     return pd.DataFrame(rows, columns=columns).set_index("location_id")
 
 
+@st.cache_data(ttl=3600)
+def load_zsd_history(location_id):
+    """Daily satellite zsd (Secchi depth) readings for one location, last 3 months."""
+    conn = psycopg2.connect(DB_DSN)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT date, zsd
+            FROM ocean_color_daily
+            WHERE location_id = %s AND zsd IS NOT NULL
+              AND date >= CURRENT_DATE - INTERVAL '3 months'
+            ORDER BY date
+            """,
+            (int(location_id),),
+        )
+        rows = cur.fetchall()
+    conn.close()
+    df = pd.DataFrame(rows, columns=["date", "zsd"])
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
 locations = load_locations()
 ocean_color = load_latest_ocean_color()
 
@@ -267,6 +289,9 @@ nav_label.markdown(
     f"{row['name']} &nbsp;({st.session_state.site_idx + 1}/{len(locations)})</div>",
     unsafe_allow_html=True,
 )
+
+
+tab_live, tab_history = st.tabs(["Live Conditions", "Visibility History"])
 
 site_point = pd.DataFrame([{"lat": row["latitude"], "lon": row["longitude"], "name": row["name"]}])
 site_point["icon_data"] = [PIN_ICON]
@@ -292,7 +317,7 @@ label_layer = pdk.Layer(
     get_pixel_offset=[0, 6],
 )
 
-st.pydeck_chart(
+tab_live.pydeck_chart(
     pdk.Deck(
         layers=[icon_layer, label_layer],
         initial_view_state=pdk.ViewState(latitude=row["latitude"], longitude=row["longitude"], zoom=12),
@@ -320,9 +345,9 @@ predicted_zsd = predict.predict_visibility(booster, live_features, row["name"], 
 
 oc_caption = f"ocean colour as of {oc['date']}" if oc is not None else "ocean colour: no data yet"
 if live is not None:
-    st.caption(f"Wave/current/rain as of {live['time']} UTC · {oc_caption}")
+    tab_live.caption(f"Wave/current/rain as of {live['time']} UTC · {oc_caption}")
 else:
-    st.caption(f"Wave/current/rain: temporarily unavailable (rate-limited) · {oc_caption}")
+    tab_live.caption(f"Wave/current/rain: temporarily unavailable (rate-limited) · {oc_caption}")
 
 tiers = {}
 if live is not None:
@@ -368,7 +393,7 @@ if oc is not None:
     cards.append(_card("🔬", "Attenuation (KD490)", f"{oc['kd490']:.3f} /m"))
     cards.append(_card("🌿", "Chlorophyll", f"{oc['chl']:.2f} mg/m³"))
 
-st.markdown(
+tab_live.markdown(
     f"""
     <div style="background:{_hex_to_rgba(overall_color, 0.14)}; border-left:4px solid {overall_color};
                 border-radius:8px; padding:8px 14px; margin-bottom:10px;
@@ -380,7 +405,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-gauge_col, cards_col = st.columns([2, 3])
+gauge_col, cards_col = tab_live.columns([2, 3])
 
 gauge_col.markdown(
     f"""
@@ -408,9 +433,27 @@ cards_col.markdown(
     unsafe_allow_html=True,
 )
 
-st.caption(
+tab_live.caption(
     "Predicted visibility comes from an XGBoost model trained on Coin de Mire (Djabeda Wreck) "
     "historical data - applied to the other two sites' own live readings, but not fit to them "
     "specifically. Diving-conditions badge is a simple rule-of-thumb (worst of "
     "wave/current/rain/visibility), not the model's own judgment."
 )
+with tab_history:
+    history = load_zsd_history(row["location_id"])
+    st.caption(f"Satellite-derived visibility (Secchi depth) at {row['name']} · last 3 months")
+    if history.empty:
+        st.info("No ocean-colour readings yet for this site.")
+    else:
+        st.line_chart(
+            history.set_index("date")["zsd"],
+            color="#2a78d6",
+            height=340,
+            use_container_width=True,
+        )
+        with st.expander("View as table"):
+            st.dataframe(
+                history.rename(columns={"date": "Date", "zsd": "Visibility (m)"}),
+                use_container_width=True,
+                hide_index=True,
+            )

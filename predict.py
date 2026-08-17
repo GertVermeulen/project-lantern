@@ -5,7 +5,8 @@ Live inference for the XGBoost visibility model trained in
 The model predicts zsd (Secchi depth, i.e. visibility in meters) from:
   - a one-hot location column per site
   - daily wave/current/sea-temp/rain aggregates (mean, trend, min, max -
-    circular mean only for the two direction columns), computed in R from
+    the two direction columns instead get sin_mean/cos_mean/concentration,
+    a unit-vector representation of the circular mean), computed in R from
     marine_hourly/weather_hourly via the same formulas as
     Transform/gold_pipeline.py
   - zsd_lag1, the previous day's actual (satellite) Secchi depth
@@ -48,12 +49,10 @@ FEATURE_NAMES = [
     "wave_period_trend",
     "wave_period_min",
     "wave_period_max",
-    "wave_direction_circular_mean",
     "ocean_current_velocity_mean",
     "ocean_current_velocity_trend",
     "ocean_current_velocity_min",
     "ocean_current_velocity_max",
-    "ocean_current_direction_circular_mean",
     "sea_surface_temperature_mean",
     "sea_surface_temperature_trend",
     "sea_surface_temperature_min",
@@ -62,6 +61,12 @@ FEATURE_NAMES = [
     "precipitation_trend",
     "precipitation_min",
     "precipitation_max",
+    "wave_direction_sin_mean",
+    "wave_direction_cos_mean",
+    "wave_direction_concentration",
+    "ocean_current_direction_sin_mean",
+    "ocean_current_direction_cos_mean",
+    "ocean_current_direction_concentration",
     "zsd_lag1",
 ]
 
@@ -69,9 +74,9 @@ LIVE_FEATURES_SQL = """
 SELECT
     m.wave_height_mean, m.wave_height_trend, m.wave_height_min, m.wave_height_max,
     m.wave_period_mean, m.wave_period_trend, m.wave_period_min, m.wave_period_max,
-    m.wave_direction_circular_mean,
+    m.wave_direction_sin_mean, m.wave_direction_cos_mean, m.wave_direction_concentration,
     m.ocean_current_velocity_mean, m.ocean_current_velocity_trend, m.ocean_current_velocity_min, m.ocean_current_velocity_max,
-    m.ocean_current_direction_circular_mean,
+    m.ocean_current_direction_sin_mean, m.ocean_current_direction_cos_mean, m.ocean_current_direction_concentration,
     m.sea_surface_temperature_mean, m.sea_surface_temperature_trend, m.sea_surface_temperature_min, m.sea_surface_temperature_max,
     w.precipitation_sum, w.precipitation_trend, w.precipitation_min, w.precipitation_max
 FROM (
@@ -86,16 +91,20 @@ FROM (
         MIN(wave_period) AS wave_period_min,
         MAX(wave_period) AS wave_period_max,
 
-        MOD(DEGREES(ATAN2(AVG(SIN(RADIANS(wave_direction))), AVG(COS(RADIANS(wave_direction)))))::numeric + 360, 360)
-            AS wave_direction_circular_mean,
+        AVG(SIN(RADIANS(wave_direction))) AS wave_direction_sin_mean,
+        AVG(COS(RADIANS(wave_direction))) AS wave_direction_cos_mean,
+        SQRT(POWER(AVG(SIN(RADIANS(wave_direction))), 2) + POWER(AVG(COS(RADIANS(wave_direction))), 2))
+            AS wave_direction_concentration,
 
         AVG(ocean_current_velocity) AS ocean_current_velocity_mean,
         regr_slope(ocean_current_velocity, EXTRACT(EPOCH FROM ts) / 3600.0) AS ocean_current_velocity_trend,
         MIN(ocean_current_velocity) AS ocean_current_velocity_min,
         MAX(ocean_current_velocity) AS ocean_current_velocity_max,
 
-        MOD(DEGREES(ATAN2(AVG(SIN(RADIANS(ocean_current_direction))), AVG(COS(RADIANS(ocean_current_direction)))))::numeric + 360, 360)
-            AS ocean_current_direction_circular_mean,
+        AVG(SIN(RADIANS(ocean_current_direction))) AS ocean_current_direction_sin_mean,
+        AVG(COS(RADIANS(ocean_current_direction))) AS ocean_current_direction_cos_mean,
+        SQRT(POWER(AVG(SIN(RADIANS(ocean_current_direction))), 2) + POWER(AVG(COS(RADIANS(ocean_current_direction))), 2))
+            AS ocean_current_direction_concentration,
 
         AVG(sea_surface_temperature) AS sea_surface_temperature_mean,
         regr_slope(sea_surface_temperature, EXTRACT(EPOCH FROM ts) / 3600.0) AS sea_surface_temperature_trend,
