@@ -30,20 +30,24 @@ shrinks geometrically each step) - what's left when the walk reaches
 yesterday is close to what R's own forecast() would give if it kept
 being refit/updated on the same live data.
 
-Calendar alignment: the JSON stores only an abstract row index (n_train,
-and xreg_tail's keys) - not the calendar date it corresponds to, and
-that start date isn't consistent across files (n_train is 1673 for the
-in-scope models, but 1461/3862 for the two d=1 ones this module skips).
-_calibrate_anchor recovers it by finding the date in ocean_color_daily
-whose zsd (or its Box-Cox transform) matches the model's last y_tail
-value almost exactly, cross-checked against the second-to-last value
-too so a coincidental near-match elsewhere doesn't get picked.
+Calendar alignment: the JSON's row index (n_train, xreg_tail's keys) has
+no calendar date attached to it by itself, and that start date isn't
+consistent across files (n_train is 1673 for the in-scope models, but
+1461/3862 for the two d=1 ones this module skips). Newer exports carry an
+explicit "train_end_date" field, which _calibrate_anchor uses directly;
+for older files without it, it falls back to finding the date in
+ocean_color_daily whose zsd (or its Box-Cox transform) matches the
+model's last y_tail value almost exactly, cross-checked against the
+second-to-last value too so a coincidental near-match elsewhere doesn't
+get picked. Both methods agree on 2024-07-30 for every in-scope model
+checked so far.
 """
 
 import json
 import math
 import os
 import re
+from datetime import date
 
 from models import LOCATION_KEYS
 
@@ -208,8 +212,13 @@ def _step(model, index, eta_history, e_history, feature_values, actual_y_transfo
 def _calibrate_anchor(conn, location_id, model):
     """
     The calendar date corresponding to the model's n_train index - see
-    module docstring. Raises ValueError if no confident match is found.
+    module docstring. Trusts an explicit "train_end_date" field if the
+    export included one; falls back to matching y_tail against production
+    zsd history otherwise. Raises ValueError if no confident match is found.
     """
+    if "train_end_date" in model:
+        return date.fromisoformat(model["train_end_date"])
+
     lam = _lambda_of(model)
     y_tail = model["y_tail"]
     target_last = _inv_boxcox(y_tail[-1], lam)
