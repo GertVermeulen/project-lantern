@@ -1,0 +1,1 @@
+{"coefficients":{"(Intercept)":14.1824314538,"wave_height_trend":22.6297191696,"sea_surface_temperature_trend":-73.5254448452,"precipitation_min":-20.0767052741,"precipitation_max":0.19139364486,"wave_direction_sin_mean":1.5474960214,"wave_direction_cos_mean":-1.5975842602,"zsd_lag1":0.44558504335,"sin_doy":0.49581385614,"cos_doy":1.520922554}}

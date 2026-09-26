@@ -1,0 +1,1 @@
+{"coefficients":{"(Intercept)":2.1048420346,"wave_height_trend":0.80145074876,"wave_height_min":0.042027277756,"wave_period_min":-0.018045175658,"wave_direction_sin_mean":0.077207921523,"wave_direction_cos_mean":-0.15078188574,"wave_direction_concentration":0.71328481404,"zsd_lag1":0.015295876222,"cos_doy":0.07607465899},"smearing_factor":1.0260536019}

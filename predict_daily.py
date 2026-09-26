@@ -8,14 +8,14 @@ so predicted values land at the same daily grain as the actual satellite
 readings they'll eventually be compared against in the Visibility History
 chart. Safe to rerun same-day (upsert on location_id + date + model_name).
 
-Runs every model that has a file to load: the XGBoost model always (it's
-required), and the reduced linear-log model (predict_linear.py) only if
-R Models/linear_log_model.json is present - lets the linear model be added
-later without breaking existing runs.
+Runs every model file that exists for a site (see models.py) - a "short"
+model whose required marine variables aren't populated yet for that site
+simply gets skipped for the day, same as a missing zsd_lag1.
 
 Setup:
     Same DB_DSN / .env as the other pipeline scripts. Needs
-    R Models/XGmodel.json to be present (same model app.py loads).
+    R Models/New Models/ to be present (see models.py for the expected
+    file naming).
 """
 
 import os
@@ -25,8 +25,8 @@ import psycopg2
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 
+import models
 import predict
-import predict_linear
 
 load_dotenv()
 
@@ -84,35 +84,21 @@ def upsert_predictions(conn, rows):
 
 def run():
     conn = psycopg2.connect(DB_DSN)
-    booster = predict.load_model()
-
-    linear_model = None
-    if os.path.exists(predict_linear.MODEL_PATH):
-        linear_model = predict_linear.load_model()
-    else:
-        print(f"[predict-daily] {predict_linear.MODEL_PATH} not found - skipping linear model.")
-
     today = date.today()
 
     rows = []
     for location_id, name in load_locations(conn):
         zsd_lag1 = latest_zsd(conn, location_id)
         live_features = predict.get_live_features(conn, location_id)
+        site_models = models.load_all(name)
 
-        xgb_predicted = predict.predict_visibility(booster, live_features, name, zsd_lag1)
-        if xgb_predicted is None:
-            print(f"[predict-daily] Skipping {name} (xgboost): no zsd_lag1 available yet.")
-        else:
-            rows.append((location_id, today, "xgboost", xgb_predicted, zsd_lag1, MODEL_VERSION))
-            print(f"[predict-daily] {name} (xgboost): predicted_zsd={xgb_predicted:.2f} (zsd_lag1={zsd_lag1:.2f})")
-
-        if linear_model is not None:
-            linear_predicted = predict_linear.predict_visibility(linear_model, live_features, zsd_lag1)
-            if linear_predicted is None:
-                print(f"[predict-daily] Skipping {name} (linear_log): missing feature or no zsd_lag1.")
+        for model_name, (kind, model) in site_models.items():
+            predicted = models.predict_visibility(kind, model, live_features, zsd_lag1, today)
+            if predicted is None:
+                print(f"[predict-daily] Skipping {name} ({model_name}): missing feature or no zsd_lag1.")
             else:
-                rows.append((location_id, today, "linear_log", linear_predicted, zsd_lag1, MODEL_VERSION))
-                print(f"[predict-daily] {name} (linear_log): predicted_zsd={linear_predicted:.2f} (zsd_lag1={zsd_lag1:.2f})")
+                rows.append((location_id, today, model_name, predicted, zsd_lag1, MODEL_VERSION))
+                print(f"[predict-daily] {name} ({model_name}): predicted_zsd={predicted:.2f} (zsd_lag1={zsd_lag1 if zsd_lag1 is None else round(zsd_lag1, 2)})")
 
     upsert_predictions(conn, rows)
     conn.close()

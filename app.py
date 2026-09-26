@@ -8,6 +8,7 @@ monitored dive site at a time, with a button to cycle through sites.
 import base64
 import math
 import os
+from datetime import date
 
 import pandas as pd
 import psycopg2
@@ -15,8 +16,8 @@ import pydeck as pdk
 import streamlit as st
 from dotenv import load_dotenv
 
+import models
 import predict
-import predict_linear
 from live_data import fetch_current_conditions
 
 load_dotenv()
@@ -220,16 +221,9 @@ def get_live_conditions(lat, lon):
 
 
 @st.cache_resource
-def load_model():
-    return predict.load_model()
-
-
-@st.cache_resource
-def load_linear_model():
-    """None if the linear model hasn't been exported yet - see predict_linear.py."""
-    if not os.path.exists(predict_linear.MODEL_PATH):
-        return None
-    return predict_linear.load_model()
+def load_site_models(location_name):
+    """{model_name: (kind, loaded_model)} for every variant available for this site - see models.py."""
+    return models.load_all(location_name)
 
 
 @st.cache_data(ttl=900)  # same cadence as the marine_recent.py / weather_pipeline.py schedule
@@ -279,17 +273,9 @@ def load_zsd_history(location_id):
     return df
 
 
-# Insertion order fixes the chart's column/color order regardless of the
-# DB's own (alphabetical) pivot order - see load_prediction_history.
-MODEL_LABELS = {
-    "xgboost": "Predicted (XGBoost)",
-    "linear_log": "Predicted (linear, log-target)",
-}
-
-
 @st.cache_data(ttl=3600)
 def load_prediction_history(location_id):
-    """Daily logged predictions for one location, pivoted by model, last 3 months - see predict_daily.py."""
+    """Daily logged predictions for one location, pivoted by model_name (raw, unlabeled), last 3 months - see predict_daily.py."""
     conn = psycopg2.connect(DB_DSN)
     with conn.cursor() as cur:
         cur.execute(
@@ -308,8 +294,7 @@ def load_prediction_history(location_id):
         return pd.DataFrame(columns=["date"])
     df = pd.DataFrame(rows, columns=["date", "model_name", "predicted_zsd"])
     df["date"] = pd.to_datetime(df["date"])
-    pivoted = df.pivot_table(index="date", columns="model_name", values="predicted_zsd").reset_index()
-    return pivoted.rename(columns=MODEL_LABELS)
+    return df.pivot_table(index="date", columns="model_name", values="predicted_zsd").reset_index()
 
 
 locations = load_locations()
@@ -317,13 +302,17 @@ ocean_color = load_latest_ocean_color()
 
 if "site_idx" not in st.session_state:
     st.session_state.site_idx = 0
+if "map_unlocked" not in st.session_state:
+    st.session_state.map_unlocked = False
 
 # Cycle site BEFORE reading which row to display, so the click takes effect this run.
 nav_prev, nav_label, nav_next = st.columns([1, 3, 1])
 if nav_prev.button("◀ Prev", use_container_width=True):
     st.session_state.site_idx = (st.session_state.site_idx - 1) % len(locations)
+    st.session_state.map_unlocked = False  # each site's map starts locked/static again
 if nav_next.button("Next ▶", use_container_width=True):
     st.session_state.site_idx = (st.session_state.site_idx + 1) % len(locations)
+    st.session_state.map_unlocked = False
 
 row = locations.iloc[st.session_state.site_idx]
 nav_label.markdown(
@@ -340,12 +329,14 @@ site_point["icon_data"] = [PIN_ICON]
 
 icon_layer = pdk.Layer(
     "IconLayer",
+    id="site-marker",
     data=site_point,
     get_icon="icon_data",
     get_position=["lon", "lat"],
     get_size=36,
     size_scale=1,
     get_color=[255, 255, 255],  # multiplies the icon's own colors - white = no tint
+    pickable=True,
 )
 label_layer = pdk.Layer(
     "TextLayer",
@@ -359,17 +350,6 @@ label_layer = pdk.Layer(
     get_pixel_offset=[0, 6],
 )
 
-tab_live.pydeck_chart(
-    pdk.Deck(
-        layers=[icon_layer, label_layer],
-        initial_view_state=pdk.ViewState(latitude=row["latitude"], longitude=row["longitude"], zoom=12),
-        map_provider="carto",
-        map_style="light",
-        tooltip=False,
-    ),
-    height=440,
-)
-
 try:
     live = get_live_conditions(row["latitude"], row["longitude"])
 except Exception:
@@ -380,16 +360,20 @@ except Exception:
 
 oc = ocean_color.loc[row["location_id"]] if row["location_id"] in ocean_color.index else None
 
-booster = load_model()
-linear_model = load_linear_model()
+site_models = load_site_models(row["name"])
 live_features = get_live_features(row["location_id"])
 zsd_lag1 = float(oc["zsd"]) if oc is not None else None
-predicted_zsd = predict.predict_visibility(booster, live_features, row["name"], zsd_lag1)
-linear_predicted_zsd = (
-    predict_linear.predict_visibility(linear_model, live_features, zsd_lag1)
-    if linear_model is not None
-    else None
-)
+
+# In models.MODEL_VARIANTS order, so the first two available become the
+# hero prediction and the one supporting card below.
+live_predictions = []
+for name, (kind, model) in site_models.items():
+    prediction = models.predict_visibility(kind, model, live_features, zsd_lag1, date.today())
+    if prediction is not None:
+        live_predictions.append((name, prediction))
+
+primary_name, predicted_zsd = live_predictions[0] if live_predictions else (None, None)
+secondary_name, secondary_predicted_zsd = live_predictions[1] if len(live_predictions) > 1 else (None, None)
 
 oc_caption = f"ocean colour as of {oc['date']}" if oc is not None else "ocean colour: no data yet"
 if live is not None:
@@ -440,8 +424,8 @@ if oc is not None:
     cards.append(_card("🛰️", f"Last satellite ({oc['date']})", f"{oc['zsd']:.1f} m"))
     cards.append(_card("🔬", "Attenuation (KD490)", f"{oc['kd490']:.3f} /m"))
     cards.append(_card("🌿", "Chlorophyll", f"{oc['chl']:.2f} mg/m³"))
-if linear_predicted_zsd is not None:
-    cards.append(_card("📐", "Linear model (log)", f"{linear_predicted_zsd:.1f} m"))
+if secondary_predicted_zsd is not None:
+    cards.append(_card("📐", models.MODEL_LABELS[secondary_name], f"{secondary_predicted_zsd:.1f} m"))
 
 tab_live.markdown(
     f"""
@@ -455,7 +439,32 @@ tab_live.markdown(
     unsafe_allow_html=True,
 )
 
-gauge_col, cards_col = tab_live.columns([2, 3])
+map_col, gauge_col, cards_col = tab_live.columns([3, 2, 3])
+
+map_event = map_col.pydeck_chart(
+    pdk.Deck(
+        layers=[icon_layer, label_layer],
+        initial_view_state=pdk.ViewState(latitude=row["latitude"], longitude=row["longitude"], zoom=12),
+        map_provider="carto",
+        map_style="light",
+        tooltip=False,
+        controller=st.session_state.map_unlocked,
+    ),
+    height=380,
+    on_select="rerun",
+    selection_mode="single-object",
+    key="site_map",
+)
+if (
+    not st.session_state.map_unlocked
+    and map_event
+    and map_event.selection.get("indices", {}).get("site-marker")
+):
+    st.session_state.map_unlocked = True
+    st.toast("Map unlocked - drag or scroll to explore", icon="🗺️")
+    st.rerun()
+if not st.session_state.map_unlocked:
+    map_col.caption("🔒 Tap the pin to enable dragging/zooming")
 
 gauge_col.markdown(
     f"""
@@ -483,10 +492,11 @@ cards_col.markdown(
     unsafe_allow_html=True,
 )
 
+hero_model_note = f" ({models.MODEL_LABELS[primary_name]})" if predicted_zsd is not None else ""
 tab_live.caption(
-    "Predicted visibility comes from an XGBoost model trained on Coin de Mire (Djabeda Wreck) "
-    "historical data - applied to the other two sites' own live readings, but not fit to them "
-    "specifically. Diving-conditions badge is a simple rule-of-thumb (worst of "
+    f"Predicted visibility comes from a model trained on {row['name']}'s own historical "
+    f"data{hero_model_note} - see the Visibility History tab to compare it against other "
+    "models. Diving-conditions badge is a simple rule-of-thumb (worst of "
     "wave/current/rain/visibility), not the model's own judgment."
 )
 with tab_history:
@@ -496,15 +506,24 @@ with tab_history:
     if actual.empty and predicted.empty:
         st.info("No ocean-colour readings yet for this site.")
     else:
+        # models.MODEL_LABELS is in models.MODEL_VARIANTS priority order, so
+        # the first two logged for this site become the default comparison.
+        available_models = [name for name in models.MODEL_LABELS if name in predicted.columns]
+        selected_models = st.multiselect(
+            "Compare models (up to 2)",
+            options=available_models,
+            default=available_models[:2],
+            max_selections=2,
+            format_func=lambda name: models.MODEL_LABELS[name],
+            key=f"history_models_{row['location_id']}",
+        )
         merged = pd.merge(
             actual.rename(columns={"zsd": "Actual (satellite)"}),
-            predicted,
+            predicted[["date"] + selected_models].rename(columns=models.MODEL_LABELS),
             on="date",
             how="outer",
         ).sort_values("date")
-        series_cols = ["Actual (satellite)"] + [
-            c for c in MODEL_LABELS.values() if c in merged.columns
-        ]
+        series_cols = ["Actual (satellite)"] + [models.MODEL_LABELS[n] for n in selected_models]
         series_colors = ["#2a78d6", "#eb6834", "#1baf7a"][: len(series_cols)]
         st.line_chart(
             merged.set_index("date")[series_cols],
