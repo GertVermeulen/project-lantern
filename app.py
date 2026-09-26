@@ -445,10 +445,10 @@ map_event = map_col.pydeck_chart(
     pdk.Deck(
         layers=[icon_layer, label_layer],
         initial_view_state=pdk.ViewState(latitude=row["latitude"], longitude=row["longitude"], zoom=12),
+        views=[pdk.View(type="MapView", controller=st.session_state.map_unlocked)],
         map_provider="carto",
         map_style="light",
         tooltip=False,
-        controller=st.session_state.map_unlocked,
     ),
     height=380,
     on_select="rerun",
