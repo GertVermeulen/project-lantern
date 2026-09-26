@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 import models
 import predict
+import ts_models
 from live_data import fetch_current_conditions
 
 load_dotenv()
@@ -47,6 +48,11 @@ STATUS_COLORS = {
 }
 TIER_RANK = {"poor": 0, "fair": 1, "good": 2, "excellent": 3}
 TIER_LABEL = {"poor": "Poor", "fair": "Fair", "good": "Good", "excellent": "Excellent"}
+
+# Regression models (models.py) + time series models (ts_models.py) - both
+# log into the same predictions table, so the History tab needs a label for
+# whichever of either family shows up in it.
+ALL_MODEL_LABELS = {**models.MODEL_LABELS, **ts_models.MODEL_LABELS}
 
 
 def _hex_to_rgba(hex_color, alpha):
@@ -506,24 +512,24 @@ with tab_history:
     if actual.empty and predicted.empty:
         st.info("No ocean-colour readings yet for this site.")
     else:
-        # models.MODEL_LABELS is in models.MODEL_VARIANTS priority order, so
-        # the first two logged for this site become the default comparison.
-        available_models = [name for name in models.MODEL_LABELS if name in predicted.columns]
+        # ALL_MODEL_LABELS is in regression-then-time-series priority order,
+        # so the first two logged for this site become the default comparison.
+        available_models = [name for name in ALL_MODEL_LABELS if name in predicted.columns]
         selected_models = st.multiselect(
             "Compare models (up to 2)",
             options=available_models,
             default=available_models[:2],
             max_selections=2,
-            format_func=lambda name: models.MODEL_LABELS[name],
+            format_func=lambda name: ALL_MODEL_LABELS[name],
             key=f"history_models_{row['location_id']}",
         )
         merged = pd.merge(
             actual.rename(columns={"zsd": "Actual (satellite)"}),
-            predicted[["date"] + selected_models].rename(columns=models.MODEL_LABELS),
+            predicted[["date"] + selected_models].rename(columns=ALL_MODEL_LABELS),
             on="date",
             how="outer",
         ).sort_values("date")
-        series_cols = ["Actual (satellite)"] + [models.MODEL_LABELS[n] for n in selected_models]
+        series_cols = ["Actual (satellite)"] + [ALL_MODEL_LABELS[n] for n in selected_models]
         series_colors = ["#2a78d6", "#eb6834", "#1baf7a"][: len(series_cols)]
         st.line_chart(
             merged.set_index("date")[series_cols],

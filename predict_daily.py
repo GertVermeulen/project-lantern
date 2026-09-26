@@ -8,14 +8,22 @@ so predicted values land at the same daily grain as the actual satellite
 readings they'll eventually be compared against in the Visibility History
 chart. Safe to rerun same-day (upsert on location_id + date + model_name).
 
-Runs every model file that exists for a site (see models.py) - a "short"
-model whose required marine variables aren't populated yet for that site
-simply gets skipped for the day, same as a missing zsd_lag1.
+Runs every regression model file that exists for a site (see models.py) -
+a "short" model whose required marine variables aren't populated yet for
+that site simply gets skipped for the day, same as a missing zsd_lag1.
+
+Also runs the in-scope time series models (see ts_models.py). Unlike the
+regression models, ts_models.rolling_forecast() naturally recomputes a
+full historical series each call (it has to, to rebuild the ARMA state -
+see that module's docstring), so this logs that whole series every day,
+not just today - an upsert on every date it returns, self-healing any
+gap since a prior run and backfilling automatically instead of needing a
+separate backfill pass the way the regression models did.
 
 Setup:
     Same DB_DSN / .env as the other pipeline scripts. Needs
-    R Models/New Models/ to be present (see models.py for the expected
-    file naming).
+    R Models/New Models/ to be present (see models.py/ts_models.py for
+    the expected file naming).
 """
 
 import os
@@ -27,6 +35,7 @@ from dotenv import load_dotenv
 
 import models
 import predict
+import ts_models
 
 load_dotenv()
 
@@ -99,6 +108,16 @@ def run():
             else:
                 rows.append((location_id, today, model_name, predicted, zsd_lag1, MODEL_VERSION))
                 print(f"[predict-daily] {name} ({model_name}): predicted_zsd={predicted:.2f} (zsd_lag1={zsd_lag1 if zsd_lag1 is None else round(zsd_lag1, 2)})")
+
+        for model_name, ts_model in ts_models.load_all(name).items():
+            try:
+                series = ts_models.rolling_forecast(conn, location_id, model_name, ts_model, live_features, today)
+            except ValueError as e:
+                print(f"[predict-daily] Skipping {name} ({model_name}): {e}")
+                continue
+            for series_date, predicted in series:
+                rows.append((location_id, series_date, model_name, predicted, None, MODEL_VERSION))
+            print(f"[predict-daily] {name} ({model_name}): logged {len(series)} date(s) through {today}.")
 
     upsert_predictions(conn, rows)
     conn.close()
