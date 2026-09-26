@@ -1,0 +1,38 @@
+# One-off/manual: log predictions for past dates already in
+# gold.daily_features, for models that didn't exist yet when those dates
+# happened (or before the daily cron existed at all). See
+# backfill_predictions.py.
+name: Backfill predictions
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Earliest date to backfill (YYYY-MM-DD)"
+        required: true
+        default: "2026-08-01"
+      until:
+        description: "Latest date to backfill (YYYY-MM-DD)"
+        required: false
+        default: ""
+
+jobs:
+  backfill-predictions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements-jobs.txt
+
+      - run: |
+          if [ -n "${{ inputs.until }}" ]; then
+            python backfill_predictions.py --since "${{ inputs.since }}" --until "${{ inputs.until }}"
+          else
+            python backfill_predictions.py --since "${{ inputs.since }}"
+          fi
+        env:
+          DB_DSN: ${{ secrets.DB_DSN }}
