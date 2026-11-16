@@ -22,6 +22,8 @@ import os
 import time
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import psycopg2
 from psycopg2.extras import execute_values, Json
 from dotenv import load_dotenv
@@ -119,6 +121,19 @@ def upsert_hourly(conn, location_id, hourly):
         )
     conn.commit()
 
+def _retrying_session():
+    """Session that retries timeouts, connection errors and 429/5xx with
+    exponential backoff, so a brief Open-Meteo hiccup doesn't fail the job."""
+    retry = Retry(
+        total=4,
+        backoff_factor=5,  # waits ~5s, 10s, 20s, 40s between attempts
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET",),
+    )
+    session = requests.Session()
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    return session
+
 # --- API call -------------------------------------------------------------
 
 def fetch_recent(conn, locations, past_hours=72):
@@ -136,7 +151,7 @@ def fetch_recent(conn, locations, past_hours=72):
         "forecast_days": 0,
         "timezone": "UTC",
     }
-    resp = requests.get(MARINE_API_URL, params=params, timeout=60)
+    resp = _retrying_session().get(MARINE_API_URL, params=params, timeout=60)
     resp.raise_for_status()
     data = resp.json()
     log_bronze_response(conn, "open-meteo-marine-recent", params, data)

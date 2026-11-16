@@ -2,7 +2,7 @@
 Open-Meteo Weather (rainfall) pipeline.
 
 Pulls hourly rainfall for the past N hours (default 72) for your dive
-locations, using Open-Meteo's standard Forecast API with the `past_days`
+locations, using Open-Meteo's standard Forecast API with the `past_hours`
 parameter. This is deliberately a "recent window" script, not a historical
 backfill - it's meant to be run whenever you want the current rainfall
 picture leading into a dive, e.g. shortly before a prediction is made.
@@ -15,10 +15,10 @@ Setup:
 """
 
 import os
-import time
-from datetime import date, timedelta
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import psycopg2
 from psycopg2.extras import execute_values, Json
 from dotenv import load_dotenv
@@ -98,6 +98,19 @@ def upsert_rainfall(conn, location_id, hourly, model="best_match"):
         )
     conn.commit()
 
+def _retrying_session():
+    """Session that retries timeouts, connection errors and 429/5xx with
+    exponential backoff, so a brief Open-Meteo hiccup doesn't fail the job."""
+    retry = Retry(
+        total=4,
+        backoff_factor=5,  # waits ~5s, 10s, 20s, 40s between attempts
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET",),
+    )
+    session = requests.Session()
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    return session
+
 # --- API call -------------------------------------------------------------
 
 def fetch_rainfall(conn, locations, past_hours=72):
@@ -115,7 +128,7 @@ def fetch_rainfall(conn, locations, past_hours=72):
         "forecast_days": 0,  # we only want the past window, not the forecast
         "timezone": "UTC",
     }
-    resp = requests.get(WEATHER_API_URL, params=params, timeout=60)
+    resp = _retrying_session().get(WEATHER_API_URL, params=params, timeout=60)
     resp.raise_for_status()
     data = resp.json()
     log_bronze_response(conn, "open-meteo-forecast", params, data)
@@ -129,15 +142,16 @@ def collect_recent_rainfall(locations, past_hours=72):
     Safe to rerun - overlapping hours are just updated, not duplicated.
     """
     conn = psycopg2.connect(DB_DSN)
-    name_to_id = ensure_locations(conn, locations)
+    try:
+        name_to_id = ensure_locations(conn, locations)
 
-    print(f"Fetching last {past_hours}h of rainfall for {len(locations)} location(s)...")
-    results = fetch_rainfall(conn, locations, past_hours=past_hours)
+        print(f"Fetching last {past_hours}h of rainfall for {len(locations)} location(s)...")
+        results = fetch_rainfall(conn, locations, past_hours=past_hours)
 
-    for loc, result in zip(locations, results):
-        upsert_rainfall(conn, name_to_id[loc["name"]], result["hourly"])
-
-    conn.close()
+        for loc, result in zip(locations, results):
+            upsert_rainfall(conn, name_to_id[loc["name"]], result["hourly"])
+    finally:
+        conn.close()
     print("Rainfall collection complete.")
 
 
